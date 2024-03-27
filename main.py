@@ -1,7 +1,6 @@
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
-
-from api import mall_carousel, mall_goods_info, mall_goods_category
+from api import mall_carousel, mall_goods_info, mall_goods_category, mall_order
 
 
 app = FastAPI()
@@ -23,6 +22,7 @@ app.add_middleware(
 app.include_router(mall_carousel.route, tags=["Carousels"])
 app.include_router(mall_goods_info.route, tags=["good_info"])
 app.include_router(mall_goods_category.route, tags=["category"])
+app.include_router(mall_order.order_route, tags=["order"])
 
 
 @app.get("/")

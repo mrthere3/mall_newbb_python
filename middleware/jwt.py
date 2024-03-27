@@ -7,7 +7,7 @@ from datetime import datetime
 
 
 class MallUserTokenService:
-    @staticmethod()
+    @staticmethod
     def ExistUserToken(token: str, db: Session) -> TbNewbeeMallUserToken:
         return (
             db.query(TbNewbeeMallUserToken)
@@ -15,7 +15,7 @@ class MallUserTokenService:
             .first()
         )
 
-    @staticmethod()
+    @staticmethod
     def UserJWTAuth(token: str, db: Session):
         if token == "":
             return CoustomResponse(status=416, msg="未登录")
@@ -25,8 +25,10 @@ class MallUserTokenService:
         if datetime.now() > mallusertoken.expire_time:
             MallUserTokenService.DeleteMallUserToken(db, token)
             return CoustomResponse(status=500, msg="授权已过期")
+        else:
+            return
 
-    @staticmethod()
+    @staticmethod
     def DeleteMallUserToken(db: Session, token: str):
         expire_token = (
             db.query(TbNewbeeMallUserToken)

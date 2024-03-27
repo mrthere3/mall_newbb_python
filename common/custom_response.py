@@ -5,7 +5,7 @@ from fastapi.encoders import jsonable_encoder
 
 class CoustomResponse(JSONResponse):
     def __init__(
-        self, data, msg="", status=200, media_type="application/json;charset=utf-8"
+        self, data="", msg="", status=200, media_type="application/json;charset=utf-8"
     ):
         res = dict()
         # 兼容自定义类的json序列化  或者重写to_dict方法
