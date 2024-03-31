@@ -45,7 +45,6 @@ def GoodsSearch(
         keyword,
         orderBy,
     )
-    glob_log.info(total)
     content = {
         "list": goodsinfo,
         "totalcount": total,
@@ -57,7 +56,9 @@ def GoodsSearch(
 
 
 @route.get("/goods/detail/{id}")
-def GoodsDetail(id: Optional[int] = Path(title="商品编号"), db: Session = Depends(get_db)):
+def GoodsDetail(
+    id: Optional[int] = Path(title="商品编号"), db: Session = Depends(get_db)
+):
     goodsInfo: TbNewbeeMallGoodsInfo = (
         db.query(TbNewbeeMallGoodsInfo)
         .filter(TbNewbeeMallGoodsInfo.goods_id == id)
