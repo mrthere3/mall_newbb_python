@@ -3,12 +3,35 @@ from fastapi import APIRouter, Header, Depends, Query, Path
 from api import get_db
 from middleware.jwt import MallUserTokenService
 from sqlalchemy.orm import Session
-from typing import Optional, Union
+from typing import Optional, Union, List
 from common.custom_response import CoustomResponse
-from model.model import TbNewbeeMallOrder, TbNewbeeMallUserToken, TbNewbeeMallOrderItem
+from model.model import (
+    TbNewbeeMallOrder,
+    TbNewbeeMallUserToken,
+    TbNewbeeMallOrderItem,
+    TbNewbeeMallShoppingCartItem,
+)
 from enum import Enum
 from datetime import datetime
 from core import glob_log
+from pydantic import BaseModel, validator
+
+
+class SaverOrderParam(BaseModel):
+    cartItemIds: List[int]
+    addressId: int
+
+    @validator("cartItemIds")
+    def name_must_not_be_empty(cls, v):
+        if not v:
+            raise ValueError("cartItemIds cannot be empty")
+        return v
+
+    @validator("addressId")
+    def name_must_not_be_empty(cls, v):
+        if not v:
+            raise ValueError("addressId cannot be empty")
+        return v
 
 
 class paycode_status(Enum):
@@ -103,12 +126,133 @@ def Detailorder(
     vailtor_token: Optional[CoustomResponse] = Depends(UserAuth),
     db: Session = Depends(get_db),
 ):
+    if vailtor_token:
+        return vailtor_token
     mallorderdetail = query_order_detail(db, orderNo, token)
     if isinstance(mallorderdetail, dict):
         return CoustomResponse(data=mallorderdetail, status=200)
     else:
         glob_log.error(mallorderdetail)
         return CoustomResponse(msg=f"查询订单详情接口 {mallorderdetail}", status=500)
+
+
+@order_route.get("/order")
+def OrderList(
+    pageNumber: int = Query(..., title="订单页数"),
+    token: str = Header(..., title="token"),
+    vailtor_token: Optional[CoustomResponse] = Depends(UserAuth),
+    db: Session = Depends(get_db),
+    status: str = Query(..., title="订单状态"),
+):
+    if vailtor_token:
+        return vailtor_token
+    if pageNumber <= 0:
+        pageNumber = 1
+    error.list_order, total = MallOrderListBySearch(db, token, pageNumber, status)
+    if not error:
+        return CoustomResponse(
+            data={
+                "list": list_order,
+                "totalCount": total,
+                "currPage": pageNumber,
+                "pageSize": 5,
+            },
+            status=200,
+        )
+    else:
+        return CoustomResponse(msg=f"查询订单详情接口 {error}", status=500)
+
+
+@order_route.post("/saveOrder")
+def SaveOrder(
+    saverOrderParam: SaverOrderParam,
+    token: str = Header(..., title="token"),
+    vailtor_token: Optional[CoustomResponse] = Depends(UserAuth),
+    db: Session = Depends(get_db),
+):
+    if vailtor_token:
+        return vailtor_token
+
+
+def MallOrderListBySearch(
+    db: Session,
+    token: str,
+    pageNumber: int,
+    status: str,
+):
+    list_order = list()
+    total = 0
+    query = db.query(TbNewbeeMallOrder)
+    usertoken: TbNewbeeMallUserToken = (
+        db.query(TbNewbeeMallUserToken)
+        .filter(TbNewbeeMallUserToken.token == token)
+        .first()
+    )
+    if not usertoken:
+        return Exception("不存在的用户"), list_order, total
+    if status != order_status:
+
+        query1 = query.filter(TbNewbeeMallOrder.order_status == status)
+    query1 = query.filter(
+        TbNewbeeMallOrder.user_id == usertoken.user_id,
+        TbNewbeeMallOrder.is_deleted == 0,
+    )
+    total = query.count()
+    offset = 5 * (pageNumber - 1)
+    newBeeMallOrders: List[TbNewbeeMallOrder] = (
+        query.order_by(desc(TbNewbeeMallOrder.order_id)).offset(offset).all()
+    )
+    orderListVOS = list_order()
+    orderIds: List[int] = list_order()
+    if total > 0:
+        for newBeeMallOrder in newBeeMallOrders:
+            mallorder_response = {
+                "orderId": newBeeMallOrder.order_id,
+                "orderNo": newBeeMallOrder.order_no,
+                "totalPrice": newBeeMallOrder.total_price,
+                "payType": newBeeMallOrder.pay_type,
+                "orderStatus": newBeeMallOrder.order_status,
+                "orderStatusString": GetNewBeeMallOrderStatusEnumByStatus(
+                    newBeeMallOrder.order_status
+                ),
+                "createTime": newBeeMallOrder.create_time,
+                "newBeeMallOrderItemVOS": [],
+            }
+            orderIds.append(newBeeMallOrder.order_id)
+            # 再for循环里面做多次查询 还是一次查询 之后再做处理?
+            orderListVOS.append(mallorder_response)
+        orderItems: List[TbNewbeeMallOrderItem] = (
+            db.query(TbNewbeeMallOrderItem)
+            .filter(TbNewbeeMallOrder.order_id.in_(orderIds))
+            .all()
+        )
+        # 获取所有的商品子类
+        itemByOrderIdMap = dict()
+        for orderItem in orderItems:
+            itemByOrderIdMap[orderItem.order_id] = []
+        for k, v in itemByOrderIdMap:
+            for orderItem in orderItems:
+                if k == orderItem.order_id:
+                    # 是否要封装成单独的response类呢?
+                    v.append(
+                        {
+                            # "orderItemId": orderItem.order_item_id,
+                            # "orderId": orderItem.order_id,
+                            "goodsId": orderItem.goods_id,
+                            "goodsName": orderItem.goods_name,
+                            "goodsCoverImg": orderItem.goods_cover_img,
+                            "sellingPrice": orderItem.selling_price,
+                            "goodsCount": orderItem.goods_count,
+                            # "createTime": orderItem.create_time,
+                        }
+                    )
+        for newBeeMallOrderListV0 in orderListVOS:
+            if orderItemListTemp := itemByOrderIdMap.get(
+                newBeeMallOrderListV0.order_id, ""
+            ):
+                newBeeMallOrderListV0.newBeeMallOderItemVOS = orderItemListTemp
+                list_order = newBeeMallOrderListV0
+    return None, list_order, total
 
 
 def query_order_success(
@@ -254,3 +398,23 @@ def query_order_detail(db: Session, orderNo: Optional[str], token: str):
         "createTime": mallorder.create_time,
         "newBeeMallOderItemVOS": newBeeMallorderItemVOS,
     }
+
+
+def GetCartItemsForSettle(db: Session, token: str, CartItemIds: List[int]):
+    cartItemRes = list()
+    user_token = (
+        db.query(TbNewbeeMallUserToken)
+        .filter(TbNewbeeMallUserToken.token == token)
+        .first()
+    )
+    if not user_token:
+        return Exception("不存在的用户"), cartItemRes
+    shopCartItems = (
+        db.query(TbNewbeeMallShoppingCartItem)
+        .filter(
+            TbNewbeeMallShoppingCartItem.cart_item_id.in_(CartItemIds),
+            TbNewbeeMallShoppingCartItem.user_id == user_token.user_id,
+        )
+        .all()
+        # TODO 接着写
+    )
