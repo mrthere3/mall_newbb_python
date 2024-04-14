@@ -3,18 +3,22 @@ from fastapi import APIRouter, Header, Depends, Query, Path
 from api import get_db
 from middleware.jwt import MallUserTokenService
 from sqlalchemy.orm import Session
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Dict
 from common.custom_response import CoustomResponse
 from model.model import (
     TbNewbeeMallOrder,
     TbNewbeeMallUserToken,
     TbNewbeeMallOrderItem,
     TbNewbeeMallShoppingCartItem,
+    TbNewbeeMallGoodsInfo,
+    TbNewbeeMallUserAddres,
 )
 from enum import Enum
 from datetime import datetime
 from core import glob_log
 from pydantic import BaseModel, validator
+import random
+import time
 
 
 class SaverOrderParam(BaseModel):
@@ -32,6 +36,22 @@ class SaverOrderParam(BaseModel):
         if not v:
             raise ValueError("addressId cannot be empty")
         return v
+
+
+# class MallOrder(BaseModel):
+#     orderId: int
+#     orderNo: str
+#     userId: int
+#     totalPrice: int
+#     payStatus: int
+#     payType: int
+#     payTime: datetime
+#     orderStatus: int
+#     extraInfo: str
+#     isDeleted: int
+#     createTime: datetime
+#     updateTime: datetime
+#
 
 
 class paycode_status(Enum):
@@ -172,6 +192,24 @@ def SaveOrder(
 ):
     if vailtor_token:
         return vailtor_token
+    itemsForSave, priceTotal = GetCartItemsForSettle(
+        db, token, saverOrderParam.cartItemIds
+    )
+    if len(itemsForSave) < 1:
+        return CoustomResponse(msg="无数据", status=500)
+    else:
+        if priceTotal < 1:
+            return CoustomResponse(msg="价格异常", status=500)
+        userAddress = GetMallUserDefaultAddress(db, token)
+        if isinstance(userAddress, Exception):
+            return CoustomResponse(msg=f"{ userAddress }", status=500)
+        else:
+            error, orderno = SaveOrdering(db, token, userAddress, itemsForSave)
+            if error:
+                glob_log.error(f"订单生成失败{ error }")
+                return CoustomResponse(msg=f"{error}", status=500)
+            else:
+                return CoustomResponse(msg="SUCCESS", status=200)
 
 
 def MallOrderListBySearch(
@@ -409,12 +447,198 @@ def GetCartItemsForSettle(db: Session, token: str, CartItemIds: List[int]):
     )
     if not user_token:
         return Exception("不存在的用户"), cartItemRes
-    shopCartItems = (
+    shopCartItems: List[TbNewbeeMallShoppingCartItem] = (
         db.query(TbNewbeeMallShoppingCartItem)
         .filter(
             TbNewbeeMallShoppingCartItem.cart_item_id.in_(CartItemIds),
             TbNewbeeMallShoppingCartItem.user_id == user_token.user_id,
         )
         .all()
-        # TODO 接着写
     )
+    cartItemRes = getMallShoppingCartItemVOS(db, shopCartItems)
+    priceTotal = 0
+    for cartItem in cartItemRes:
+        priceTotal += cartItem.get("goodsCount") * cartItem.get("sellingPrice")
+    return cartItemRes, priceTotal
+
+
+def getMallShoppingCartItemVOS(
+    db: Session, CartItems: List[TbNewbeeMallShoppingCartItem]
+):
+    cartItemsRes = list()
+    goodIds: List[int] = [cartItem.goods_id for cartItem in CartItems]
+    # 查询出所有的goods_id
+    newBeeMallGoods: List[TbNewbeeMallGoodsInfo] = (
+        db.query(TbNewbeeMallGoodsInfo)
+        .filter(TbNewbeeMallGoodsInfo.goods_id.in_(goodIds))
+        .all()
+    )
+    newBeeMallGoodsMap = dict()
+    for goodsInfo in newBeeMallGoods:
+        newBeeMallGoodsMap[goodsInfo.goods_id] = goodsInfo
+    for cartItem in CartItems:
+        cartItemRes = {
+            "cartItemId": cartItem.cart_item_id,
+            "goodsCount": cartItem.goods_count,
+            "goodsId": cartItem.goods_id,
+        }
+        if newBeeMallGoodsTemp := newBeeMallGoodsMap[cartItem.goods_id]:
+            cartItemRes["goodsCoverImg"] = newBeeMallGoodsTemp.goods_cover_img
+            cartItemRes["goodsName"] = (
+                newBeeMallGoodsTemp.goods_name
+                if len(newBeeMallGoodsTemp.goods_name) < 28
+                else newBeeMallGoodsTemp.goods_name[:27] + "..."
+            )
+            cartItemRes["sellingPrice"] = newBeeMallGoodsTemp.selling_price
+            cartItemsRes.append(cartItemRes)
+    return cartItemsRes
+
+
+def GetMallUserDefaultAddress(db: Session, token: str):
+    user_token = (
+        db.query(TbNewbeeMallUserToken)
+        .filter(TbNewbeeMallUserToken.token == token)
+        .first()
+    )
+    if not user_token:
+        return Exception("不存在的用户")
+    userAddress: TbNewbeeMallUserAddres = (
+        db.query(TbNewbeeMallUserAddres)
+        .filter(
+            TbNewbeeMallUserAddres.user_id == user_token.user_id,
+            TbNewbeeMallUserAddres.default_flag == 1,
+            TbNewbeeMallUserAddres.is_deleted == 0,
+        )
+        .first()
+    )
+    if not userAddress:
+        return Exception("不存在默认地址")
+    return userAddress
+
+
+def SaveOrdering(
+    db: Session, token: str, userAddress: TbNewbeeMallUserAddres, myShoppingCartItems
+):
+    orderNo = str()
+    user_token: TbNewbeeMallUserToken = (
+        db.query(TbNewbeeMallUserToken)
+        .filter(TbNewbeeMallUserToken.token == token)
+        .first()
+    )
+    if not user_token:
+        return Exception("不存在的用户"), orderNo
+    itemIdList = [cartItem.get("cartItemId") for catItem in myShoppingCartItems]
+    goodsIds = [cartItem.get("goodsId") for cartItem in myShoppingCartItems]
+    newBeeMallGoods: List[TbNewbeeMallGoodsInfo] = db.query(
+        TbNewbeeMallGoodsInfo
+    ).filter(TbNewbeeMallGoodsInfo.goods_id.in_(goodIds).all())
+    for mallgoods in newBeeMallGoods:
+        if mallgoods.goods_sell_status != 0:
+            return Exception("商品已经下架,无法生成订单"), orderNo
+    newBeeMallGoodsMap: Dict[int, TbNewbeeMallGoodsInfo] = dict()
+    for mallgoods in newBeeMallGoods:
+        newBeeMallGoodsMap[mallgoods.goods_id] = mallgoods
+    for shoppingCartItemV0 in myShoppingCartItems:
+        if not newBeeMallGoodsMap[shoppingCartItemV0.get("goodsId")]:
+            return Exception("购物车数据异常"), orderNo
+        if (
+            shoppingCartItemV0.get("goodsCount")
+            > newBeeMallGoodsMap[shoppingCartItemV0.get("goodsId")].stock_num
+        ):
+            return Exception("库存不足!"), orderNo
+    if len(itemIdList) > 0 and len(goodsIds) > 0:
+        db.query(TbNewbeeMallShoppingCartItem).filter(
+            TbNewbeeMallShoppingCartItem.cart_item_id.in_(itemIdList)
+        ).update({TbNewbeeMallShoppingCartItem.is_deleted: 1})
+        db.flush()
+        db.commit()
+        for shoppingCartItemV0 in myShoppingCartItems:
+            goodsInfo: TbNewbeeMallGoodsInfo = (
+                db.query(TbNewbeeMallGoodsInfo)
+                .filter(
+                    TbNewbeeMallGoodsInfo.goods_id == shoppingCartItemV0.get("goodsId")
+                )
+                .fitst()
+            )
+            try:
+
+                db.query(TbNewbeeMallGoodsInfo).filter(
+                    TbNewbeeMallGoodsInfo.goods_id == shoppingCartItemV0.get("goodsId"),
+                    TbNewbeeMallGoodsInfo.goodsCount
+                    >= shoppingCartItemV0.get("goodsCount"),
+                    TbNewbeeMallGoodsInfo.goods_sell_status == 0,
+                ).update(
+                    {
+                        TbNewbeeMallGoodsInfo.stock_num: (
+                            goodsInfo.stock_num - shoppingCartItemV0.get("goodsCount")
+                        )
+                    }
+                )
+            except Exception as e:
+                # 可能更新出错进行事务回滚
+                db.rollback()
+                return Exception("库存不足"), orderNo
+        orderNo = gen_order_no()
+        priceTotal = 0
+        newBeeMallOrder: TbNewbeeMallOrder = TbNewbeeMallOrder()
+        newBeeMallOrder.order_no = orderNo
+        newBeeMallOrder.user_id = user_token.user_id
+        for newBeeMallShoppingCartItemVO in myShoppingCartItems:
+            priceTotal += newBeeMallShoppingCartItemVO.get(
+                "goodsCount"
+            ) * newBeeMallShoppingCartItemVO.get("sellingPrice")
+        if priceTotal < 1:
+            return Exception("订单价格异常"), orderNo
+        newBeeMallOrder.create_time = datetime().now()
+        newBeeMallOrder.update_time = datetime().now()
+        newBeeMallOrder.total_price = priceTotal
+        newBeeMallOrder.extra_info = ""
+        try:
+            db.add(newBeeMallOrder)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            return Exception(e), orderNo
+        # 生成所有的订单项快照，并保存至数据库
+        newBeeMallOrderItems: List[TbNewbeeMallOrderItem] = list()
+        for newBeeMallShoppingCartItemVO in myShoppingCartItems:
+            newBeeMallOrderItem = TbNewbeeMallOrderItem()
+            newBeeMallOrderItem.order_id = newBeeMallOrder.order_id
+            newBeeMallOrderItem.create_time = newBeeMallOrder.create_time
+            newBeeMallOrderItem.order_item_id = newBeeMallShoppingCartItemVO.get(
+                "cartItemId"
+            )
+            newBeeMallOrderItem.goods_id = newBeeMallShoppingCartItemVO.get("goodsId")
+            newBeeMallOrderItem.goods_name = newBeeMallShoppingCartItemVO.get(
+                "goodsName"
+            )
+            newBeeMallOrderItem.goods_cover_img = newBeeMallShoppingCartItemVO.get(
+                "goodsCoverImg"
+            )
+            newBeeMallOrderItem.selling_price = newBeeMallShoppingCartItemVO.get(
+                "sellingPrice"
+            )
+            newBeeMallOrderItem.goods_count = newBeeMallShoppingCartItemVO.get(
+                "goodsCount"
+            )
+            newBeeMallOrderItems.append(newBeeMallOrderItem)
+        try:
+            db.add_all(newBeeMallOrderItems)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            return Exception(e), orderNo
+        return None, orderNo
+
+
+def gen_order_no():
+    numeric = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    r = len(numeric)
+    random.seed(time.time_ns())
+
+    sb = ""
+    for i in range(4):
+        sb += str(random.choice(numeric))
+
+    timestamp = str(int(time.time() * 1000))  # 将当前时间转换为毫秒级时间戳
+    return timestamp + sb
