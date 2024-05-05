@@ -1,5 +1,7 @@
 # -*- coding=utf-8 -*-
 from fastapi import APIRouter, Header, Depends, Query, Path
+from sqlalchemy import desc
+
 from api import get_db
 from middleware.jwt import MallUserTokenService
 from sqlalchemy.orm import Session
@@ -90,9 +92,7 @@ order_route = APIRouter(prefix="/api/v1", dependencies=[Depends(UserAuth)])
 def paySuccess(
     db: Session = Depends(get_db),
     orderNo: Optional[str] = Query(default=""),
-    vailtor_token: Optional[CoustomResponse] = Depends(
-        UserAuth
-    ),  # 接收父路由依赖的返回值
+    vailtor_token: Optional[CoustomResponse] = Depends(UserAuth),  # 接收父路由依赖的返回值
     payType: Optional[int] = Query(default=""),
 ):
     if vailtor_token:
@@ -168,7 +168,7 @@ def OrderList(
         return vailtor_token
     if pageNumber <= 0:
         pageNumber = 1
-    error.list_order, total = MallOrderListBySearch(db, token, pageNumber, status)
+    error, list_order, total = MallOrderListBySearch(db, token, pageNumber, status)
     if not error:
         return CoustomResponse(
             data={
@@ -228,8 +228,7 @@ def MallOrderListBySearch(
     )
     if not usertoken:
         return Exception("不存在的用户"), list_order, total
-    if status != order_status:
-
+    if status != "":
         query1 = query.filter(TbNewbeeMallOrder.order_status == status)
     query1 = query.filter(
         TbNewbeeMallOrder.user_id == usertoken.user_id,
@@ -240,8 +239,8 @@ def MallOrderListBySearch(
     newBeeMallOrders: List[TbNewbeeMallOrder] = (
         query.order_by(desc(TbNewbeeMallOrder.order_id)).offset(offset).all()
     )
-    orderListVOS = list_order()
-    orderIds: List[int] = list_order()
+    orderListVOS = list()
+    orderIds: List[int] = list()
     if total > 0:
         for newBeeMallOrder in newBeeMallOrders:
             mallorder_response = {
@@ -250,9 +249,9 @@ def MallOrderListBySearch(
                 "totalPrice": newBeeMallOrder.total_price,
                 "payType": newBeeMallOrder.pay_type,
                 "orderStatus": newBeeMallOrder.order_status,
-                "orderStatusString": GetNewBeeMallOrderStatusEnumByStatus(
+                "orderStatusString": GetNewBeeMallOrderStatusEnumByStatus[
                     newBeeMallOrder.order_status
-                ),
+                ],
                 "createTime": newBeeMallOrder.create_time,
                 "newBeeMallOrderItemVOS": [],
             }
@@ -286,7 +285,7 @@ def MallOrderListBySearch(
                     )
         for newBeeMallOrderListV0 in orderListVOS:
             if orderItemListTemp := itemByOrderIdMap.get(
-                newBeeMallOrderListV0.order_id, ""
+                newBeeMallOrderListV0["orderId"], ""
             ):
                 newBeeMallOrderListV0.newBeeMallOderItemVOS = orderItemListTemp
                 list_order = newBeeMallOrderListV0
@@ -310,8 +309,8 @@ def query_order_success(
             mallOrder.order_status = paycode_status.ORDER_SUCCESS.value
             mallOrder.pay_type = payType
             mallOrder.pay_status = 1
-            mallOrder.pay_time = datetime().now()
-            mallOrder.update_time = datetime().now()
+            mallOrder.pay_time = datetime.now()
+            mallOrder.update_time = datetime.now()
             db.add(mallOrder)
             # 事务提交
             db.commit()
@@ -383,7 +382,7 @@ def query_order_cancel(db: Session, orderNo: Optional[str], token: str):
         db.add(mallorder)
         db.commit()
         return
-    except expression as e:
+    except Exception as e:
         db.rollback()
 
 
@@ -409,9 +408,9 @@ def query_order_detail(db: Session, orderNo: Optional[str], token: str):
     mallorderitem: TbNewbeeMallOrderItem = (
         db.query(TbNewbeeMallOrderItem)
         .filter(TbNewbeeMallOrderItem.order_id == mallorder.order_id)
-        .all()
+        .first()
     )
-    if len(mallorderitem) < 1:
+    if not mallorderitem:
         return Exception("订单项不存在")
 
     newBeeMallorderItemVOS = {
@@ -427,12 +426,12 @@ def query_order_detail(db: Session, orderNo: Optional[str], token: str):
         "totalPrice": mallorder.total_price,
         "payStatus": mallorder.pay_status,
         "payType": mallorder.pay_type,
-        "payTypeString": GetNewBeeMallOrderStatusEnumByStatus(mallorder.pay_type),
+        "payTypeString": GetNewBeeMallOrderStatusEnumByStatus[mallorder.pay_type],
         "payTime": mallorder.pay_time,
         "orderStatus": mallorder.order_status,
-        "orderStatusString": GetNewBeeMallOrderStatusEnumByStatus(
+        "orderStatusString": GetNewBeeMallOrderStatusEnumByStatus[
             mallorder.order_status
-        ),
+        ],
         "createTime": mallorder.create_time,
         "newBeeMallOderItemVOS": newBeeMallorderItemVOS,
     }
@@ -527,11 +526,11 @@ def SaveOrdering(
     )
     if not user_token:
         return Exception("不存在的用户"), orderNo
-    itemIdList = [cartItem.get("cartItemId") for catItem in myShoppingCartItems]
+    itemIdList = [catItem.get("cartItemId") for catItem in myShoppingCartItems]
     goodsIds = [cartItem.get("goodsId") for cartItem in myShoppingCartItems]
     newBeeMallGoods: List[TbNewbeeMallGoodsInfo] = db.query(
         TbNewbeeMallGoodsInfo
-    ).filter(TbNewbeeMallGoodsInfo.goods_id.in_(goodIds).all())
+    ).filter(TbNewbeeMallGoodsInfo.goods_id.in_(goodsIds).all())
     for mallgoods in newBeeMallGoods:
         if mallgoods.goods_sell_status != 0:
             return Exception("商品已经下架,无法生成订单"), orderNo
@@ -561,7 +560,6 @@ def SaveOrdering(
                 .fitst()
             )
             try:
-
                 db.query(TbNewbeeMallGoodsInfo).filter(
                     TbNewbeeMallGoodsInfo.goods_id == shoppingCartItemV0.get("goodsId"),
                     TbNewbeeMallGoodsInfo.goodsCount
@@ -589,8 +587,8 @@ def SaveOrdering(
             ) * newBeeMallShoppingCartItemVO.get("sellingPrice")
         if priceTotal < 1:
             return Exception("订单价格异常"), orderNo
-        newBeeMallOrder.create_time = datetime().now()
-        newBeeMallOrder.update_time = datetime().now()
+        newBeeMallOrder.create_time = datetime.now()
+        newBeeMallOrder.update_time = datetime.now()
         newBeeMallOrder.total_price = priceTotal
         newBeeMallOrder.extra_info = ""
         try:
