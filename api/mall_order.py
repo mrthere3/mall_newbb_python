@@ -34,7 +34,7 @@ class SaverOrderParam(BaseModel):
         return v
 
     @validator("addressId")
-    def name_must_not_be_empty(cls, v):
+    def addressId_must_not_be_empty(cls, v):
         if not v:
             raise ValueError("addressId cannot be empty")
         return v

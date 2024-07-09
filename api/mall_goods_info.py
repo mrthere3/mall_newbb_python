@@ -8,14 +8,15 @@ from api import get_db  # route,
 from sqlalchemy.orm import Session
 from typing import List, Optional, Any, Union
 from . import route
+from sqlalchemy import or_
 
 
 class GoodsSearchReasponse(BaseModel):
-    GoodsId: int
-    Goodsname: str
-    GoodsIntro: str
-    GoodsCoverImg: str
-    SellingPrice: int
+    goodsId: int
+    goodsName: str
+    goodsIntro: str
+    goodsCoverImg: str
+    sellingPrice: int
 
 
 class GoodsInfoDetailResponse(BaseModel):
@@ -33,7 +34,7 @@ class GoodsInfoDetailResponse(BaseModel):
 @route.get("/search")
 def GoodsSearch(
     pageNumber: Optional[str] = 1,
-    goodsCategoryId: Optional[int] = None,
+    goodsCategoryId: Optional[int] = -1,
     keyword: Optional[str] = None,
     orderBy: Optional[str] = None,
     db: Session = Depends(get_db),
@@ -56,9 +57,7 @@ def GoodsSearch(
 
 
 @route.get("/goods/detail/{id}")
-def GoodsDetail(
-    id: Optional[int] = Path(title="商品编号"), db: Session = Depends(get_db)
-):
+def GoodsDetail(id: Optional[int] = Path(title="商品编号"), db: Session = Depends(get_db)):
     goodsInfo: TbNewbeeMallGoodsInfo = (
         db.query(TbNewbeeMallGoodsInfo)
         .filter(TbNewbeeMallGoodsInfo.goods_id == id)
@@ -93,8 +92,10 @@ def MallGoodsByCategory(
     db = db.query(TbNewbeeMallGoodsInfo)
     if keyword:
         db = db.filter(
-            TbNewbeeMallGoodsInfo.goods_name.like(f"%{keyword}%"),
-            TbNewbeeMallGoodsInfo.goods_intro.like(f"%{keyword}%"),
+            or_(
+                TbNewbeeMallGoodsInfo.goods_name.like(f"%{keyword}%"),
+                TbNewbeeMallGoodsInfo.goods_intro.like(f"%{keyword}%"),
+            )
         )
     if goodsCategoryId >= 0:
         db = db.filter(TbNewbeeMallGoodsInfo.goods_category_id == goodsCategoryId)
@@ -108,11 +109,11 @@ def MallGoodsByCategory(
     goods: List[TbNewbeeMallGoodsInfo] = db.limit(10).offset(int(pageNumber) - 1).all()
     Goods_info: List[GoodsSearchReasponse] = [
         GoodsSearchReasponse(
-            GoodsId=good.goods_id,
-            Goodsname=good.goods_name,
-            GoodsIntro=good.goods_intro,
-            GoodsCoverImg=good.goods_cover_img,
-            SellingPrice=good.selling_price,
+            goodsId=good.goods_id,
+            goodsName=good.goods_name,
+            goodsIntro=good.goods_intro,
+            goodsCoverImg=good.goods_cover_img,
+            sellingPrice=good.selling_price,
         )
         for good in goods
     ]
